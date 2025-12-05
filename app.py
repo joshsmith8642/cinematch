@@ -12,79 +12,63 @@ TMDB_API_KEY = st.secrets["tmdb_api_key"]
 SHEET_ID = st.secrets["sheet_id"]
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# --- ADVANCED CSS (The "Overlay" Magic) ---
+# --- CSS STYLING ---
 st.markdown("""
 <style>
-    /* Card Container */
+    /* Movie Card Container */
     .movie-card {
         position: relative;
-        border-radius: 10px;
+        border-radius: 12px;
         overflow: hidden;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        margin-bottom: 10px;
         transition: transform 0.2s;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        margin-bottom: 8px;
     }
     .movie-card:hover {
         transform: scale(1.02);
     }
-    
-    /* The Poster Image */
     .movie-img {
         width: 100%;
         display: block;
-        border-radius: 10px;
+        border-radius: 12px;
     }
-
-    /* Rating Badge Container (Bottom Left overlap) */
-    .rating-container {
+    
+    /* Rating Overlays */
+    .rating-overlay {
         position: absolute;
-        bottom: 5px;
-        left: 5px;
+        bottom: 8px;
+        left: 8px;
         display: flex;
-        gap: 5px;
+        gap: 6px;
+        z-index: 2;
     }
-
-    /* The Ring Itself */
-    .rating-ring {
-        position: relative;
-        width: 38px;
-        height: 38px;
-        background-color: #081c22;
+    .rating-badge {
+        width: 36px;
+        height: 36px;
         border-radius: 50%;
+        background: #081c22;
+        border: 2px solid #21d07a;
         display: flex;
-        justify-content: center;
         align-items: center;
-        border: 2px solid #21d07a; /* Default Green */
-        box-shadow: 0 0 4px rgba(0,0,0,0.5);
-    }
-    
-    .rating-text {
+        justify-content: center;
         color: white;
-        font-family: 'Arial', sans-serif;
         font-weight: bold;
-        font-size: 13px;
+        font-size: 11px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.5);
     }
-    
-    .rating-sub {
+    .user-badge {
+        border-color: #01b4e4; /* Blue for User */
+    }
+    .sub-percent {
         font-size: 7px;
-        vertical-align: top;
-    }
-
-    /* User Rating (Blue Ring) */
-    .user-ring {
-        border-color: #01b4e4 !important;
+        margin-left: 1px;
     }
     
-    /* Action Buttons (Streamlit Overrides) */
-    div[data-testid="stHorizontalBlock"] button {
-        padding: 0px 10px;
-        font-size: 1.2rem;
-        border: none;
-        background: transparent;
-    }
-    div[data-testid="stHorizontalBlock"] button:hover {
-        background: rgba(255,255,255,0.1);
-        color: #E50914;
+    /* Button Tweaks */
+    div[data-testid="column"] button {
+        width: 100%;
+        padding: 0.25rem 0.5rem;
+        font-size: 0.8rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -181,7 +165,7 @@ def get_recommendations(watched_ids, media_type="movie", selected_genre_ids=None
         data = [m for m in data if str(m['id']) not in watched_ids]
     return data
 
-# --- HTML CARD RENDERER ---
+# --- HTML CARD RENDERER (FIXED) ---
 def render_movie_card_html(poster_path, tmdb_score, user_score=None):
     """Generates the HTML for the image with overlaid ratings"""
     
@@ -192,28 +176,28 @@ def render_movie_card_html(poster_path, tmdb_score, user_score=None):
     
     poster_url = f"https://image.tmdb.org/t/p/w400{poster_path}" if poster_path else "https://via.placeholder.com/200x300"
     
-    html = f"""
+    # Build User Ring HTML (if applicable)
+    user_ring_html = ""
+    if user_score:
+        user_ring_html = f"""
+        <div class="rating-badge user-badge" title="Your Rating">
+            {int(user_score)}<span class="sub-percent">%</span>
+        </div>
+        """
+    
+    # Construct the final HTML block
+    html_block = f"""
     <div class="movie-card">
         <img src="{poster_url}" class="movie-img">
-        <div class="rating-container">
-            <div class="rating-ring" style="border-color: {tmdb_color};" title="TMDB Rating">
-                <span class="rating-text">{tmdb_score}<span class="rating-sub">%</span></span>
+        <div class="rating-overlay">
+            <div class="rating-badge" style="border-color: {tmdb_color};" title="TMDB Rating">
+                {tmdb_score}<span class="sub-percent">%</span>
             </div>
-    """
-    
-    # Add User Rating Ring if it exists
-    if user_score:
-        html += f"""
-            <div class="rating-ring user-ring" title="Your Rating">
-                <span class="rating-text">{int(user_score)}<span class="rating-sub">%</span></span>
-            </div>
-        """
-        
-    html += """
+            {user_ring_html}
         </div>
     </div>
     """
-    return html
+    return html_block
 
 # --- APP STARTUP ---
 st.set_page_config(page_title="Cinematch", layout="wide", page_icon="🎬")
@@ -224,11 +208,9 @@ if 'view_movie_detail' not in st.session_state: st.session_state.view_movie_deta
 if 'rec_page' not in st.session_state: st.session_state.rec_page = 1
 if 'loaded_recs' not in st.session_state: st.session_state.loaded_recs = []
 
-# --- ONBOARDING (Simplified for this snippet, same as before) ---
 existing_users = get_users()
 if not existing_users:
-    # (Keeping your existing onboarding logic here effectively)
-    st.warning("Please create a profile using the previous code logic (omitted here to fit the UI update).")
+    st.warning("Please create a profile.")
     st.stop()
 
 # --- SIDEBAR ---
@@ -252,7 +234,7 @@ if nav_choice == "Home":
     # 1. SEARCH BAR
     search_query = st.text_input("🔍 Search...", placeholder="Movies, TV Shows...")
 
-    # 2. DETAIL MODAL (Replaces Grid)
+    # 2. DETAIL MODAL
     if st.session_state.view_movie_detail:
         m = st.session_state.view_movie_detail
         if st.button("← Back to Grid"):
@@ -281,33 +263,41 @@ if nav_choice == "Home":
             st.subheader("Search Results")
             display_list = search_tmdb(search_query)
         else:
-            # --- SLICERS & FILTERS ---
-            c_slice, c_filter = st.columns([2, 1])
+            # --- FILTERS ROW ---
+            c_slice, c_type = st.columns([2, 2])
             with c_slice:
                 view_mode = st.radio("View Mode", ["Recommendations", "Rewatch"], horizontal=True, label_visibility="collapsed")
-            with c_filter:
+            with c_type:
                 media_type = st.radio("Type", ["Movies", "TV Shows"], horizontal=True, label_visibility="collapsed")
+
+            # --- GENRE SLICER (RESTORED) ---
+            g_map = get_tmdb_genres()
+            sel_genres = st.multiselect("Filter by Genre", list(g_map.keys()), placeholder="All Genres")
+            sel_genre_ids = [g_map[name] for name in sel_genres]
 
             history = get_watched_history()
             
             # --- LOGIC: REWATCH ---
             if view_mode == "Rewatch":
                 if not history.empty:
-                    # Filter by User
                     my_history = history[history['User'] == active_user]
-                    # Convert to list of dicts for the renderer
                     display_list = []
                     for _, row in my_history.iterrows():
+                        # Genre Filter for History
+                        # Note: Genres stored as string "Action, Sci-Fi"
+                        if sel_genres and not any(g in row['Genres'] for g in sel_genres):
+                            continue
+                            
                         display_list.append({
                             "id": row['Movie_ID'],
                             "title": row['Title'],
                             "poster_path": row['Poster'],
-                            "vote_average": 0, # We don't have TMDB score stored in log, maybe skip
+                            "vote_average": 0, 
                             "user_rating": row['Rating'],
-                            "release_date": row['Date'], # Using watch date as placeholder
+                            "release_date": row['Date'], 
                             "media_type": row['Type']
                         })
-                    display_list.reverse() # Newest first
+                    display_list.reverse()
                 else:
                     st.info("No history yet.")
                     display_list = []
@@ -315,19 +305,20 @@ if nav_choice == "Home":
             # --- LOGIC: RECOMMENDATIONS ---
             else:
                 watched_ids = history['Movie_ID'].astype(str).tolist() if not history.empty else []
-                # Check Filters
+                
+                # Check Filters for Pagination Reset
+                curr_filters = (media_type, tuple(sel_genre_ids))
                 if 'last_filters' not in st.session_state: st.session_state.last_filters = None
-                curr_filters = (media_type)
+                
                 if st.session_state.last_filters != curr_filters:
                     st.session_state.loaded_recs = []
                     st.session_state.rec_page = 1
                     st.session_state.last_filters = curr_filters
                 
                 if not st.session_state.loaded_recs:
-                    new_data = get_recommendations(watched_ids, media_type, page=1)
+                    new_data = get_recommendations(watched_ids, media_type, sel_genre_ids, page=1)
                     st.session_state.loaded_recs.extend(new_data)
                 
-                # Filter out Hidden
                 display_list = [m for m in st.session_state.loaded_recs if m['id'] not in st.session_state.hidden_movies]
 
         # --- GRID RENDERER ---
@@ -337,14 +328,13 @@ if nav_choice == "Home":
             batch = display_list[i:i+GRID_COLS]
             for idx, item in enumerate(batch):
                 with cols[idx]:
-                    # DATA PREP
                     title = item.get('title', item.get('name'))
                     date = item.get('release_date', item.get('first_air_date', 'N/A'))[:4]
                     tmdb_score = int(item.get('vote_average', 0) * 10)
                     user_score = item.get('user_rating', None)
                     m_type = item.get('media_type', 'movie')
                     
-                    # 1. HTML CARD (Image + Overlays)
+                    # 1. HTML CARD
                     st.markdown(render_movie_card_html(item.get('poster_path'), tmdb_score, user_score), unsafe_allow_html=True)
                     
                     # 2. TITLE
@@ -352,37 +342,30 @@ if nav_choice == "Home":
                     else: d_title = title
                     st.markdown(f"**{d_title}** <span style='color:gray; font-size:0.8em'>({date})</span>", unsafe_allow_html=True)
                     
-                    # 3. BUTTONS (Action Bar)
-                    b_col1, b_col2, b_col3 = st.columns(3)
-                    
-                    # Details
-                    with b_col1:
-                        if st.button("ℹ️", key=f"d_{item['id']}", help="Details"):
+                    # 3. BUTTONS (With Text)
+                    b1, b2, b3 = st.columns(3, gap="small")
+                    with b1:
+                        if st.button("ℹ️ Details", key=f"d_{item['id']}"):
                             item['title'] = title
                             item['media_type'] = m_type
                             st.session_state.view_movie_detail = item
                             st.rerun()
-                    
-                    # Watch (Log)
-                    with b_col2:
-                        if st.button("✅", key=f"w_{item['id']}", help="Log as Watched"):
+                    with b2:
+                        if st.button("✅ Log", key=f"w_{item['id']}"):
                             item['title'] = title
                             item['media_type'] = m_type
                             st.session_state.view_movie_detail = item
                             st.rerun()
-                            
-                    # Hide
-                    with b_col3:
-                        if st.button("🚫", key=f"h_{item['id']}", help="Not Interested"):
+                    with b3:
+                        if st.button("🚫 Hide", key=f"h_{item['id']}"):
                             st.session_state.hidden_movies.append(item['id'])
                             st.rerun()
 
-        # LOAD MORE
         if not search_query and view_mode == "Recommendations":
             st.write("")
             if st.button("Load More..."):
                 st.session_state.rec_page += 1
-                new_data = get_recommendations([], media_type, page=st.session_state.rec_page)
+                new_data = get_recommendations([], media_type, sel_genre_ids, page=st.session_state.rec_page)
                 st.session_state.loaded_recs.extend(new_data)
                 st.rerun()
 
