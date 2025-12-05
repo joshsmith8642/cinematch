@@ -6,6 +6,7 @@ from googleapiclient.discovery import build
 from datetime import datetime
 import time
 from streamlit_option_menu import option_menu
+from collections import Counter
 
 # --- CONFIGURATION ---
 TMDB_API_KEY = st.secrets["tmdb_api_key"]
@@ -84,6 +85,14 @@ st.markdown("""
     div[data-testid="column"] {
         padding: 0 2px !important;
     }
+    
+    /* Metric Cards */
+    div[data-testid="metric-container"] {
+        background-color: #1a1a1a;
+        padding: 10px;
+        border-radius: 8px;
+        border: 1px solid #333;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -155,7 +164,7 @@ def get_tmdb_genres():
     return {g['name']: g['id'] for g in data.get('genres', [])}
 
 def get_movie_details_live(movie_id, media_type="movie"):
-    """Fetches fresh details (like current rating) for a specific ID"""
+    """Fetches fresh details"""
     try:
         endpoint = "tv" if media_type == "TV Shows" else "movie"
         url = f"https://api.themoviedb.org/3/{endpoint}/{movie_id}?api_key={TMDB_API_KEY}"
@@ -172,8 +181,8 @@ def get_recommendations(watched_ids, media_type="movie", selected_genre_ids=None
     data = requests.get(base_url).json().get('results', [])
     
     # --- ROBUST FILTERING ---
-    # Convert everything to strings to ensure matches work (550 vs "550")
     watched_set = set(str(x) for x in watched_ids)
+    # Important: Always check session state for hidden movies
     hidden_set = set(str(x) for x in st.session_state.hidden_movies)
     
     filtered_data = []
@@ -194,7 +203,7 @@ def render_card(poster_path, tmdb_score, user_score=None):
     
     # 1. TMDB Badge
     tmdb_html = ""
-    if tmdb_score is not None:
+    if tmdb_score is not None and tmdb_score > 0:
         color = "#21d07a" # Green
         if tmdb_score < 70: color = "#d2d531" # Yellow
         if tmdb_score < 40: color = "#db2360" # Red
@@ -240,6 +249,41 @@ with st.sidebar:
 # --- HOME PAGE ---
 if nav_choice == "Home":
     
+    # --- STATS DASHBOARD (Above Search) ---
+    history = get_watched_history()
+    user_history = pd.DataFrame()
+    if not history.empty:
+        user_history = history[history['User'] == active_user]
+
+    if not user_history.empty:
+        s1, s2, s3 = st.columns(3)
+        
+        # 1. Total Watched
+        s1.metric("Total Watched", len(user_history))
+        
+        # 2. Top Genre
+        all_genres = []
+        for g_str in user_history['Genres']:
+            if g_str and g_str.lower() != 'unknown' and g_str.lower() != 'error':
+                parts = [x.strip() for x in str(g_str).split(',')]
+                all_genres.extend(parts)
+        
+        top_genre = "N/A"
+        if all_genres:
+            counts = Counter(all_genres)
+            top_genre = counts.most_common(1)[0][0]
+        s2.metric("Top Genre", top_genre)
+        
+        # 3. Avg Rating
+        try:
+            avg_score = user_history['Rating'].astype(float).mean()
+            s3.metric("Your Avg Score", f"{avg_score:.1f}")
+        except:
+            s3.metric("Your Avg Score", "-")
+    else:
+        st.info("Log movies to see your stats here!")
+
+    st.write("") # Spacer
     search_query = st.text_input("🔍 Search...", placeholder="Movies, TV Shows...")
 
     # --- DETAIL VIEW ---
@@ -264,7 +308,6 @@ if nav_choice == "Home":
             if st.button("✅ Log to Database", type="primary"):
                 log_media(m['title'], m['id'], m.get('genre_ids', []), {active_user: user_rating}, m['media_type'], m['poster_path'])
                 st.success("Logged!")
-                # Add to local ignore list immediately so it vanishes from Recs
                 st.session_state.hidden_movies.append(str(m['id'])) 
                 st.session_state.view_movie_detail = None
                 time.sleep(1)
@@ -288,29 +331,32 @@ if nav_choice == "Home":
                 g_map = get_tmdb_genres()
                 sel_genres = st.multiselect("Genre", list(g_map.keys()), placeholder="All Genres", label_visibility="collapsed")
                 sel_ids = [g_map[name] for name in sel_genres]
-
-            history = get_watched_history()
             
             # 1. REWATCH DATA
             if view_mode == "Rewatch":
-                if not history.empty:
-                    my_hist = history[history['User'] == active_user].copy()
+                if not user_history.empty:
+                    my_hist = user_history.copy()
                     display_list = []
                     
-                    # NOTE: We now fetch live data for scores to fix the "0" bug
-                    # This might be slightly slower but ensures accuracy
+                    # Target Type for Slicer
+                    target_type = "movie" if media_type == "Movies" else "tv"
+                    
                     for _, row in my_hist.iterrows():
+                        # Filter by Type (Fixed Slicer)
+                        if row['Type'] != target_type: continue
+                        
+                        # Filter by Genre
                         if sel_genres and not any(g in row['Genres'] for g in sel_genres): continue
                         
-                        # Live Lookup
+                        # Live Lookup for TMDB Score (Fixing 10x bug: We do NOT multiply here)
                         live_data = get_movie_details_live(row['Movie_ID'], row['Type'])
-                        live_score = int(live_data.get('vote_average', 0) * 10)
+                        live_score = live_data.get('vote_average', 0) 
                         
                         display_list.append({
                             "id": row['Movie_ID'], 
                             "title": row['Title'], 
                             "poster_path": row['Poster'],
-                            "vote_average": live_score, # Fixed!
+                            "vote_average": live_score, 
                             "user_rating": float(row['Rating']), 
                             "media_type": row['Type'], 
                             "date": row['Date'],
@@ -332,20 +378,20 @@ if nav_choice == "Home":
                 if 'last_filters' not in st.session_state: st.session_state.last_filters = None
                 if st.session_state.last_filters != curr_filters:
                     st.session_state.loaded_recs = []
-                    st.session_state.existing_ids = set() # Clear ID cache
+                    st.session_state.existing_ids = set() 
                     st.session_state.rec_page = 1
                     st.session_state.last_filters = curr_filters
                 
-                # Load Page
                 if not st.session_state.loaded_recs:
                     new_data = get_recommendations(watched_ids, media_type, sel_ids, page=1)
-                    # Deduplicate before adding
                     for m in new_data:
                         if str(m['id']) not in st.session_state.existing_ids:
                             st.session_state.loaded_recs.append(m)
                             st.session_state.existing_ids.add(str(m['id']))
                 
-                display_list = st.session_state.loaded_recs
+                # STRICT HIDE FILTER
+                hidden_set = set(str(x) for x in st.session_state.hidden_movies)
+                display_list = [m for m in st.session_state.loaded_recs if str(m['id']) not in hidden_set]
                 
                 # Sorting
                 if sort_by == "Rating": display_list = sorted(display_list, key=lambda x: x.get('vote_average', 0), reverse=True)
@@ -360,32 +406,33 @@ if nav_choice == "Home":
                 with cols[idx]:
                     # Values
                     title = item.get('title', item.get('name'))
-                    tmdb = int(item.get('vote_average', 0) * 10)
+                    # Score Calculation (Multiply by 10 ONLY here)
+                    raw_score = item.get('vote_average', 0)
+                    tmdb = int(raw_score * 10)
+                    
                     user = item.get('user_rating', None)
                     m_type = item.get('media_type', 'movie')
                     poster = item.get('poster_path')
                     
-                    # Fix: Add Year
                     raw_date = item.get('release_date', item.get('first_air_date', ''))
                     year = raw_date[:4] if raw_date else ""
                     
                     # HTML Card
                     st.markdown(render_card(poster, tmdb, user), unsafe_allow_html=True)
                     
-                    # Text Title with Year
+                    # Text Title
                     short_title = (title[:16] + "..") if len(title) > 18 else title
                     st.markdown(f"**{short_title}** <span style='font-size:0.8em; color:gray'>({year})</span>", unsafe_allow_html=True)
 
                     # Text Buttons
                     b1, b2, b3 = st.columns(3)
-                    # Use unique keys by appending loop index "i" to avoid DuplicateKeyError
                     unique_key_suffix = f"{item['id']}_{i}_{idx}"
                     
                     with b1:
                         if st.button("Info", key=f"d_{unique_key_suffix}"):
                             item['title'] = title
                             item['media_type'] = m_type
-                            item['release_date'] = raw_date # Ensure date passes to detail view
+                            item['release_date'] = raw_date 
                             st.session_state.view_movie_detail = item
                             st.rerun()
                     with b2:
@@ -406,7 +453,6 @@ if nav_choice == "Home":
                 st.session_state.rec_page += 1
                 new_data = get_recommendations(watched_ids, media_type, sel_ids, page=st.session_state.rec_page)
                 
-                # Robust Deduplication
                 count_new = 0
                 for m in new_data:
                     if str(m['id']) not in st.session_state.existing_ids:
