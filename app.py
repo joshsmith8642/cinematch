@@ -128,7 +128,6 @@ def log_media(title, movie_id, genres, users_ratings, media_type, poster_path):
             if isinstance(genres[0], dict):
                 genre_str = ", ".join([g.get('name', '') for g in genres])
             elif isinstance(genres[0], int):
-                # We skip the map fetch for speed here, just logging IDs if map fails
                 genre_str = str(genres) 
         else:
             genre_str = str(genres)
@@ -155,22 +154,41 @@ def get_tmdb_genres():
     data = requests.get(url).json()
     return {g['name']: g['id'] for g in data.get('genres', [])}
 
+def get_movie_details_live(movie_id, media_type="movie"):
+    """Fetches fresh details (like current rating) for a specific ID"""
+    try:
+        endpoint = "tv" if media_type == "TV Shows" else "movie"
+        url = f"https://api.themoviedb.org/3/{endpoint}/{movie_id}?api_key={TMDB_API_KEY}"
+        return requests.get(url).json()
+    except: return {}
+
 def get_recommendations(watched_ids, media_type="movie", selected_genre_ids=None, page=1):
     endpoint = "tv" if media_type == "TV Shows" else "movie"
     base_url = f"https://api.themoviedb.org/3/discover/{endpoint}?api_key={TMDB_API_KEY}&language=en-US&sort_by=popularity.desc&vote_count.gte=200&page={page}"
     if selected_genre_ids:
         g_str = ",".join([str(g) for g in selected_genre_ids])
         base_url += f"&with_genres={g_str}"
+    
     data = requests.get(base_url).json().get('results', [])
-    if watched_ids:
-        data = [m for m in data if str(m['id']) not in watched_ids]
-    return data
+    
+    # --- ROBUST FILTERING ---
+    # Convert everything to strings to ensure matches work (550 vs "550")
+    watched_set = set(str(x) for x in watched_ids)
+    hidden_set = set(str(x) for x in st.session_state.hidden_movies)
+    
+    filtered_data = []
+    for m in data:
+        m_id = str(m['id'])
+        if m_id not in watched_set and m_id not in hidden_set:
+            filtered_data.append(m)
+            
+    return filtered_data
 
 def search_tmdb(query):
     url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
     return requests.get(url).json().get('results', [])
 
-# --- HTML GENERATOR (FLATTENED TO FIX BUG) ---
+# --- HTML GENERATOR ---
 def render_card(poster_path, tmdb_score, user_score=None):
     poster_url = f"https://image.tmdb.org/t/p/w400{poster_path}" if poster_path else "https://via.placeholder.com/200x300"
     
@@ -180,16 +198,13 @@ def render_card(poster_path, tmdb_score, user_score=None):
         color = "#21d07a" # Green
         if tmdb_score < 70: color = "#d2d531" # Yellow
         if tmdb_score < 40: color = "#db2360" # Red
-        # Single line string
         tmdb_html = f'<div class="rating-badge badge-left" style="border-color: {color};"><span class="badge-label">TMDB</span>{tmdb_score}</div>'
     
     # 2. User Badge
     user_html = ""
     if user_score is not None and str(user_score) != 'nan':
-        # Single line string
         user_html = f'<div class="rating-badge badge-right"><span class="badge-label">YOU</span>{int(float(user_score))}</div>'
 
-    # 3. Final HTML (Single line)
     return f'<div class="movie-card"><img src="{poster_url}" class="movie-img">{tmdb_html}{user_html}</div>'
 
 # --- APP STARTUP ---
@@ -200,6 +215,7 @@ if 'hidden_movies' not in st.session_state: st.session_state.hidden_movies = []
 if 'view_movie_detail' not in st.session_state: st.session_state.view_movie_detail = None
 if 'rec_page' not in st.session_state: st.session_state.rec_page = 1
 if 'loaded_recs' not in st.session_state: st.session_state.loaded_recs = []
+if 'existing_ids' not in st.session_state: st.session_state.existing_ids = set()
 
 existing_users = get_users()
 if not existing_users:
@@ -237,7 +253,10 @@ if nav_choice == "Home":
         with c1:
             st.image(f"https://image.tmdb.org/t/p/w400{m['poster_path']}", use_container_width=True)
         with c2:
-            st.markdown(f"## {m['title']}")
+            title_text = f"{m['title']}"
+            if 'release_date' in m:
+                title_text += f" ({m['release_date'][:4]})"
+            st.markdown(f"## {title_text}")
             st.write(m.get('overview'))
             st.divider()
             st.subheader("Rate & Log")
@@ -245,6 +264,8 @@ if nav_choice == "Home":
             if st.button("✅ Log to Database", type="primary"):
                 log_media(m['title'], m['id'], m.get('genre_ids', []), {active_user: user_rating}, m['media_type'], m['poster_path'])
                 st.success("Logged!")
+                # Add to local ignore list immediately so it vanishes from Recs
+                st.session_state.hidden_movies.append(str(m['id'])) 
                 st.session_state.view_movie_detail = None
                 time.sleep(1)
                 st.rerun()
@@ -275,11 +296,25 @@ if nav_choice == "Home":
                 if not history.empty:
                     my_hist = history[history['User'] == active_user].copy()
                     display_list = []
+                    
+                    # NOTE: We now fetch live data for scores to fix the "0" bug
+                    # This might be slightly slower but ensures accuracy
                     for _, row in my_hist.iterrows():
                         if sel_genres and not any(g in row['Genres'] for g in sel_genres): continue
+                        
+                        # Live Lookup
+                        live_data = get_movie_details_live(row['Movie_ID'], row['Type'])
+                        live_score = int(live_data.get('vote_average', 0) * 10)
+                        
                         display_list.append({
-                            "id": row['Movie_ID'], "title": row['Title'], "poster_path": row['Poster'],
-                            "vote_average": 0, "user_rating": float(row['Rating']), "media_type": row['Type'], "date": row['Date']
+                            "id": row['Movie_ID'], 
+                            "title": row['Title'], 
+                            "poster_path": row['Poster'],
+                            "vote_average": live_score, # Fixed!
+                            "user_rating": float(row['Rating']), 
+                            "media_type": row['Type'], 
+                            "date": row['Date'],
+                            "release_date": live_data.get('release_date', live_data.get('first_air_date', ''))
                         })
                     
                     if sort_by == "Rating": display_list.sort(key=lambda x: x['user_rating'], reverse=True)
@@ -291,23 +326,30 @@ if nav_choice == "Home":
             # 2. RECS DATA
             else:
                 watched_ids = history['Movie_ID'].astype(str).tolist() if not history.empty else []
-                # Cache Logic
+                
+                # Reset Logic
                 curr_filters = (media_type, tuple(sel_ids), sort_by)
                 if 'last_filters' not in st.session_state: st.session_state.last_filters = None
                 if st.session_state.last_filters != curr_filters:
                     st.session_state.loaded_recs = []
+                    st.session_state.existing_ids = set() # Clear ID cache
                     st.session_state.rec_page = 1
                     st.session_state.last_filters = curr_filters
                 
+                # Load Page
                 if not st.session_state.loaded_recs:
                     new_data = get_recommendations(watched_ids, media_type, sel_ids, page=1)
-                    st.session_state.loaded_recs.extend(new_data)
+                    # Deduplicate before adding
+                    for m in new_data:
+                        if str(m['id']) not in st.session_state.existing_ids:
+                            st.session_state.loaded_recs.append(m)
+                            st.session_state.existing_ids.add(str(m['id']))
                 
-                raw = [m for m in st.session_state.loaded_recs if m['id'] not in st.session_state.hidden_movies]
+                display_list = st.session_state.loaded_recs
                 
-                if sort_by == "Rating": display_list = sorted(raw, key=lambda x: x.get('vote_average', 0), reverse=True)
-                elif sort_by == "Newest": display_list = sorted(raw, key=lambda x: x.get('release_date', '0000'), reverse=True)
-                else: display_list = raw
+                # Sorting
+                if sort_by == "Rating": display_list = sorted(display_list, key=lambda x: x.get('vote_average', 0), reverse=True)
+                elif sort_by == "Newest": display_list = sorted(display_list, key=lambda x: x.get('release_date', '0000'), reverse=True)
 
         # RENDERER
         COLS = 6
@@ -323,39 +365,59 @@ if nav_choice == "Home":
                     m_type = item.get('media_type', 'movie')
                     poster = item.get('poster_path')
                     
+                    # Fix: Add Year
+                    raw_date = item.get('release_date', item.get('first_air_date', ''))
+                    year = raw_date[:4] if raw_date else ""
+                    
                     # HTML Card
                     st.markdown(render_card(poster, tmdb, user), unsafe_allow_html=True)
                     
-                    # Text Title
+                    # Text Title with Year
                     short_title = (title[:16] + "..") if len(title) > 18 else title
-                    st.markdown(f"**{short_title}**")
+                    st.markdown(f"**{short_title}** <span style='font-size:0.8em; color:gray'>({year})</span>", unsafe_allow_html=True)
 
-                    # Text Buttons (Clean, aligned)
+                    # Text Buttons
                     b1, b2, b3 = st.columns(3)
+                    # Use unique keys by appending loop index "i" to avoid DuplicateKeyError
+                    unique_key_suffix = f"{item['id']}_{i}_{idx}"
+                    
                     with b1:
-                        if st.button("Info", key=f"d_{item['id']}"):
+                        if st.button("Info", key=f"d_{unique_key_suffix}"):
                             item['title'] = title
                             item['media_type'] = m_type
+                            item['release_date'] = raw_date # Ensure date passes to detail view
                             st.session_state.view_movie_detail = item
                             st.rerun()
                     with b2:
-                        if st.button("Log", key=f"l_{item['id']}"):
+                        if st.button("Log", key=f"l_{unique_key_suffix}"):
                             item['title'] = title
                             item['media_type'] = m_type
+                            item['release_date'] = raw_date
                             st.session_state.view_movie_detail = item
                             st.rerun()
                     with b3:
-                        if st.button("Hide", key=f"h_{item['id']}"):
-                            st.session_state.hidden_movies.append(item['id'])
+                        if st.button("Hide", key=f"h_{unique_key_suffix}"):
+                            st.session_state.hidden_movies.append(str(item['id']))
                             st.rerun()
 
         if not search_query and view_mode == "Recommendations":
             st.write("")
             if st.button("Load More..."):
                 st.session_state.rec_page += 1
-                new_data = get_recommendations([], media_type, sel_ids, page=st.session_state.rec_page)
-                st.session_state.loaded_recs.extend(new_data)
-                st.rerun()
+                new_data = get_recommendations(watched_ids, media_type, sel_ids, page=st.session_state.rec_page)
+                
+                # Robust Deduplication
+                count_new = 0
+                for m in new_data:
+                    if str(m['id']) not in st.session_state.existing_ids:
+                        st.session_state.loaded_recs.append(m)
+                        st.session_state.existing_ids.add(str(m['id']))
+                        count_new += 1
+                
+                if count_new == 0:
+                    st.toast("No more new movies found for this filter!")
+                else:
+                    st.rerun()
 
 elif nav_choice == "Profile":
     st.header(f"Profile: {active_user}")
