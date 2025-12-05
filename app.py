@@ -58,7 +58,7 @@ st.markdown("""
         min-height: 24px !important; height: 24px !important; width: 100% !important;
     }
     
-    /* NEW STATS CONTAINER */
+    /* Stats Container */
     .stats-container {
         background-color: #121212;
         border-radius: 12px;
@@ -66,11 +66,7 @@ st.markdown("""
         border: 1px solid #333;
         margin-bottom: 20px;
     }
-    .stat-box {
-        text-align: center;
-        padding: 10px;
-        border-right: 1px solid #333;
-    }
+    .stat-box { text-align: center; padding: 10px; border-right: 1px solid #333; }
     .stat-box:last-child { border-right: none; }
     .stat-value { font-size: 24px; font-weight: 800; color: #fff; }
     .stat-label { font-size: 11px; text-transform: uppercase; color: #888; margin-top: 5px; }
@@ -79,8 +75,15 @@ st.markdown("""
     
     /* Genre Header */
     .genre-header {
-        font-size: 1.4rem; font-weight: 700; margin-top: 25px; margin-bottom: 10px;
-        display: flex; align-items: center; border-bottom: 1px solid #333; padding-bottom: 5px;
+        font-size: 1.4rem; font-weight: 700; margin-top: 25px; margin-bottom: 5px;
+        display: flex; align-items: center;
+    }
+    .genre-sub { font-size: 0.8rem; color: #666; margin-bottom: 10px; font-weight: 400; }
+    
+    /* Credit Pills */
+    .credit-pill {
+        background-color: #333; color: white; padding: 2px 8px; border-radius: 12px;
+        font-size: 0.8rem; margin-right: 5px; display: inline-block;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -163,7 +166,6 @@ def get_watched_history():
 # --- TMDB FUNCTIONS ---
 @st.cache_data
 def get_tmdb_genres(media_type="movie"):
-    """Fetch genres for Movie or TV"""
     endpoint = "tv" if media_type == "tv" else "movie"
     url = f"https://api.themoviedb.org/3/genre/{endpoint}/list?api_key={TMDB_API_KEY}&language=en-US"
     data = requests.get(url).json()
@@ -171,7 +173,6 @@ def get_tmdb_genres(media_type="movie"):
 
 @st.cache_data
 def get_genre_map_reversed(media_type="movie"):
-    """Returns {id: 'Name'} map"""
     try:
         endpoint = "tv" if media_type == "tv" else "movie"
         url = f"https://api.themoviedb.org/3/genre/{endpoint}/list?api_key={TMDB_API_KEY}&language=en-US"
@@ -197,30 +198,45 @@ def get_watch_providers(media_id, media_type="movie"):
         return providers
     except: return []
 
-# --- ALGORITHM: GENRE ROWS ---
+@st.cache_data
+def get_credits_and_trailer(media_id, media_type="movie"):
+    """Fetches trailer key and top credits"""
+    endpoint = "tv" if media_type == "tv" else "movie"
+    
+    # Trailer
+    vid_url = f"https://api.themoviedb.org/3/{endpoint}/{media_id}/videos?api_key={TMDB_API_KEY}"
+    vid_data = requests.get(vid_url).json()
+    trailer_key = None
+    for vid in vid_data.get('results', []):
+        if vid['site'] == 'YouTube' and vid['type'] == 'Trailer':
+            trailer_key = vid['key']
+            break
+            
+    # Credits
+    cred_url = f"https://api.themoviedb.org/3/{endpoint}/{media_id}/credits?api_key={TMDB_API_KEY}"
+    cred_data = requests.get(cred_url).json()
+    
+    director = [c['name'] for c in cred_data.get('crew', []) if c['job'] == 'Director']
+    cast = [c['name'] for c in cred_data.get('cast', [])[:3]]
+    
+    return trailer_key, director[:1], cast
+
 def get_genre_rows_data(genre_id, media_type, provider_ids=None, page=1, avoid_ids=None):
-    """Fetch content for a specific genre row"""
     endpoint = "tv" if media_type == "tv" else "movie"
     base_url = f"https://api.themoviedb.org/3/discover/{endpoint}?api_key={TMDB_API_KEY}&language=en-US"
-    
-    # Sort by popularity + vote count to ensure quality suggestions
     params = f"&with_genres={genre_id}&sort_by=popularity.desc&vote_count.gte=200&page={page}"
-    
     if provider_ids:
         p_str = "|".join([str(p) for p in provider_ids])
         params += f"&with_watch_providers={p_str}&watch_region=US"
         
     data = requests.get(base_url + params).json().get('results', [])
     
-    # Anti-Bad Filter (Remove movies similar to bad ones if possible)
-    # Simple ID exclusion for now
     filtered = []
     if avoid_ids:
         for m in data:
             if str(m['id']) not in avoid_ids:
                 filtered.append(m)
         return filtered
-        
     return data
 
 def search_tmdb(query):
@@ -280,7 +296,6 @@ with st.sidebar:
 # --- HOME PAGE ---
 if nav_choice == "Home":
     
-    # 1. LOAD DATA
     history = get_watched_history()
     user_history = pd.DataFrame()
     if not history.empty:
@@ -296,7 +311,6 @@ if nav_choice == "Home":
     with c_search:
         search_query = st.text_input("Search", placeholder="Search Movies & TV...", label_visibility="collapsed")
     with c_type:
-        # MASTER FILTER: TV vs MOVIE
         media_type_display = st.radio("Type", ["Movies", "TV Shows"], horizontal=True, label_visibility="collapsed")
         media_type = "movie" if media_type_display == "Movies" else "tv"
     with c_stream:
@@ -305,7 +319,6 @@ if nav_choice == "Home":
             selected_providers = st.multiselect("Providers", list(PROVIDERS.keys()), default=["Netflix", "Max"], label_visibility="collapsed")
             prov_ids = [PROVIDERS[p] for p in selected_providers] if use_stream_filter else None
 
-    # Filter History by Selected Type
     if not user_history.empty:
         user_history = user_history[user_history['Type'] == media_type]
 
@@ -318,24 +331,20 @@ if nav_choice == "Home":
         avg_rating = chart_data['Rating'].mean()
         total_rated = len(chart_data)
         
-        # --- ALTAIR HISTOGRAM (GRADIENT) ---
         base = alt.Chart(chart_data).encode(
             x=alt.X('Rating', bin=alt.Bin(step=5), title='Rating Distribution'),
             y=alt.Y('count()', title=None)
         )
-        
         bars = base.mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3).encode(
             color=alt.Color('Rating', scale=alt.Scale(scheme='redyellowgreen'), legend=None),
             tooltip=['count()']
         )
-        
         rule = alt.Chart(pd.DataFrame({'mean': [avg_rating]})).mark_rule(color='white', strokeDash=[4, 4]).encode(x='mean')
         
         final_chart = (bars + rule).properties(height=100, background='transparent').configure_axis(
             labelColor='#888', titleColor='#888', gridColor='#333', domain=False
         ).configure_view(strokeWidth=0)
 
-        # RENDER STATS
         with st.container():
             st.markdown('<div class="stats-container">', unsafe_allow_html=True)
             c_s1, c_s2, c_s3, c_chart = st.columns([1, 1, 1, 3])
@@ -343,7 +352,6 @@ if nav_choice == "Home":
             with c_s1:
                 st.markdown(f"<div class='stat-box'><div class='stat-value accent-blue'>{total_rated}</div><div class='stat-label'>Rated</div></div>", unsafe_allow_html=True)
             
-            # Find Top Genre
             g_map_rev = get_genre_map_reversed(media_type)
             all_g = []
             for g_str in user_history['Genres']:
@@ -363,21 +371,39 @@ if nav_choice == "Home":
                 st.altair_chart(final_chart, use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # --- DETAIL MODAL ---
+    # --- DETAIL MODAL (NEW: TRAILERS & CREDITS) ---
     if st.session_state.view_movie_detail:
         m = st.session_state.view_movie_detail
         if st.button("← Back"):
             st.session_state.view_movie_detail = None
             st.rerun()
         
-        c1, c2 = st.columns([1,3])
+        # Fetch Extended Info
+        trailer, directors, cast = get_credits_and_trailer(m['id'], media_type)
+        
+        c1, c2 = st.columns([1,2])
         with c1: st.image(f"https://image.tmdb.org/t/p/w400{m['poster_path']}", use_container_width=True)
         with c2:
             st.markdown(f"## {m.get('title', m.get('name'))}")
             
+            # Credits
+            if directors: st.markdown(f"**Director:** {', '.join(directors)}")
+            if cast: 
+                cast_html = "".join([f"<span class='credit-pill'>{c}</span>" for c in cast])
+                st.markdown(f"**Cast:** {cast_html}", unsafe_allow_html=True)
+            
+            st.write("---")
+            
+            # Trailer
+            if trailer:
+                st.video(f"https://www.youtube.com/watch?v={trailer}")
+            else:
+                st.info("No trailer available.")
+                
             if 'provider_logos' not in m: m['provider_logos'] = get_watch_providers(m['id'], media_type)
             if m['provider_logos']:
                 logos = "".join([f'<img src="{l}" class="detail-stream-logo">' for l in m['provider_logos']])
+                st.write("")
                 st.markdown(f"**Available on:**<br>{logos}", unsafe_allow_html=True)
             
             st.write(m.get('overview'))
@@ -403,6 +429,8 @@ if nav_choice == "Home":
             with cols[i % 6]:
                 st.markdown(render_card(item['poster_path'], None), unsafe_allow_html=True)
                 if st.button("Log", key=f"s_{item['id']}"):
+                    item['title'] = item.get('title', item.get('name'))
+                    item['media_type'] = item.get('media_type', 'movie')
                     st.session_state.view_movie_detail = item
                     st.rerun()
 
@@ -412,14 +440,12 @@ if nav_choice == "Home":
         g_map = get_tmdb_genres(media_type)
         sel_genres = st.multiselect("Filter Genres", list(g_map.keys()), placeholder="Showing Top Genres by Default")
         
-        # Determine Genres to Show
         genres_to_show = []
+        genre_scores_map = {}
         
         if sel_genres:
-            # Explicit selection
             genres_to_show = sel_genres
         else:
-            # Auto-rank based on user history
             g_map_rev = get_genre_map_reversed(media_type)
             genre_scores = {}
             if not user_history.empty:
@@ -433,25 +459,21 @@ if nav_choice == "Home":
                             genre_scores[name].append(r)
                     except: continue
             
-            # Sort by Avg Rating
             ranked = sorted([(k, sum(v)/len(v)) for k,v in genre_scores.items()], key=lambda x: x[1], reverse=True)
+            genre_scores_map = dict(ranked)
             top_user_genres = [x[0] for x in ranked]
             
-            # Backfill with defaults if < 5
             defaults = ["Action", "Comedy", "Sci-Fi", "Drama", "Thriller"] if media_type == "movie" else ["Drama", "Comedy", "Sci-Fi & Fantasy", "Animation", "Crime"]
-            
             genres_to_show = top_user_genres
             for d in defaults:
                 if d not in genres_to_show: genres_to_show.append(d)
             
-            genres_to_show = genres_to_show[:5] # Cap at 5 rows
+            genres_to_show = genres_to_show[:5]
 
-        # Identify Bad Movies for Anti-Filter
         avoid_ids = set()
         if not user_history.empty:
             bad_movies = user_history[pd.to_numeric(user_history['Rating'], errors='coerce') <= 50]
             avoid_ids = set(bad_movies['Movie_ID'].tolist())
-            # Also add Hidden
             avoid_ids.update(st.session_state.hidden_movies)
 
         # RENDER ROWS
@@ -459,15 +481,18 @@ if nav_choice == "Home":
             g_id = g_map.get(g_name)
             if not g_id: continue
             
-            st.markdown(f"<div class='genre-header'>{g_name}</div>", unsafe_allow_html=True)
+            # Dynamic Header Info
+            header_suffix = ""
+            if g_name in genre_scores_map:
+                score = int(genre_scores_map[g_name])
+                header_suffix = f"<div class='genre-sub'>You rate this genre <b>{score}/100</b> on average.</div>"
             
-            # Pagination
+            st.markdown(f"<div class='genre-header'>{g_name}</div>{header_suffix}", unsafe_allow_html=True)
+            
             page_key = f"{g_name}_{media_type}"
             if page_key not in st.session_state.genre_pages: st.session_state.genre_pages[page_key] = 1
             
             movies = get_genre_rows_data(g_id, media_type, prov_ids, st.session_state.genre_pages[page_key], avoid_ids)
-            
-            # Limit to 5
             movies = movies[:5]
             
             cols = st.columns([1,1,1,1,1, 0.5])
@@ -482,10 +507,14 @@ if nav_choice == "Home":
                     k = f"{g_name}_{m['id']}"
                     with c1: 
                         if st.button("Info", key=f"i_{k}"):
+                            m['title'] = m.get('title', m.get('name'))
+                            m['media_type'] = media_type
                             st.session_state.view_movie_detail = m
                             st.rerun()
                     with c2:
                         if st.button("Log", key=f"l_{k}"):
+                            m['title'] = m.get('title', m.get('name'))
+                            m['media_type'] = media_type
                             st.session_state.view_movie_detail = m
                             st.rerun()
                     with c3:
