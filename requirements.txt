@@ -3,3 +3,4 @@ pandas
 requests
 google-api-python-client
 google-auth
+streamlit-option-menu
