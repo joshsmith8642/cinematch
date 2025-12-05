@@ -5,6 +5,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from datetime import datetime
 import time
+from streamlit_option_menu import option_menu
 
 # --- CONFIGURATION ---
 TMDB_API_KEY = st.secrets["tmdb_api_key"]
@@ -12,6 +13,16 @@ SHEET_ID = st.secrets["sheet_id"]
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 # --- STYLING & HTML COMPONENTS ---
+def render_header():
+    """Custom Logo Header"""
+    return """
+    <div style="display: flex; align-items: center; margin-bottom: 20px;">
+        <span style="font-size: 2.5rem;">🎬</span>
+        <span style="font-size: 2rem; font-weight: 800; color: #E50914; letter-spacing: -1px; margin-left: 10px;">Cine</span>
+        <span style="font-size: 2rem; font-weight: 800; color: #ffffff; letter-spacing: -1px;">Match</span>
+    </div>
+    """
+
 def render_rating_ring(score, label="Score"):
     """TMDB-style colored ring"""
     if not score: return ""
@@ -21,19 +32,11 @@ def render_rating_ring(score, label="Score"):
     else: color = "#db2360" # Red
     
     return f"""
-    <div style="display: flex; align-items: center; margin-right: 15px;">
-        <div style="position: relative; width: 40px; height: 40px; border-radius: 50%; background: #081c22; display: flex; align-items: center; justify-content: center; border: 3px solid {color};">
-            <span style="color: white; font-weight: bold; font-size: 14px;">{score}<span style="font-size:8px;">%</span></span>
+    <div style="display: flex; align-items: center; margin-right: 10px;">
+        <div style="position: relative; width: 35px; height: 35px; border-radius: 50%; background: #081c22; display: flex; align-items: center; justify-content: center; border: 3px solid {color};">
+            <span style="color: white; font-weight: bold; font-size: 11px;">{score}<span style="font-size:7px;">%</span></span>
         </div>
-        <div style="margin-left: 8px; color: #fff; font-size: 0.8em; font-weight: bold;">{label}</div>
     </div>
-    """
-
-def render_watched_badge():
-    return """
-    <span style="background-color: #21d07a; color: #000; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.8em;">
-        ✅ WATCHED
-    </span>
     """
 
 # --- BACKEND FUNCTIONS ---
@@ -61,7 +64,6 @@ def add_user(name, favorite_genres, seed_movies):
     rows = get_data("Users!A:A")
     new_id = len(rows) if rows else 1
     
-    # Store seeds as simple string for now
     row = [[new_id, name, ", ".join(favorite_genres), str(seed_movies)]]
     
     service.values().append(
@@ -72,7 +74,34 @@ def add_user(name, favorite_genres, seed_movies):
 def log_media(title, movie_id, genres, users_ratings, media_type, poster_path):
     service = get_google_sheet_client()
     timestamp = datetime.now().strftime("%Y-%m-%d")
-    genre_str = ", ".join([g['name'] for g in genres]) if isinstance(genres, list) else str(genres)
+    
+    # --- ROBUST GENRE FIX ---
+    # 1. Fetch Genre Map once
+    try:
+        url = f"https://api.themoviedb.org/3/genre/movie/list?api_key={TMDB_API_KEY}&language=en-US"
+        data = requests.get(url).json()
+        id_map = {g['id']: g['name'] for g in data.get('genres', [])}
+    except: id_map = {}
+
+    genre_str = ""
+    # Check if genres is valid
+    if isinstance(genres, list) and len(genres) > 0:
+        # Check first item to see if it's Dict or Int
+        first_item = genres[0]
+        
+        if isinstance(first_item, dict):
+            # Format: [{'id': 28, 'name': 'Action'}]
+            names = [g.get('name', '') for g in genres]
+            genre_str = ", ".join(names)
+            
+        elif isinstance(first_item, int):
+            # Format: [28, 12]
+            names = [id_map.get(g_id, str(g_id)) for g_id in genres]
+            genre_str = ", ".join(names)
+            
+    else:
+        genre_str = str(genres)
+    # -------------------------
 
     new_rows = []
     for user, rating in users_ratings.items():
@@ -97,236 +126,258 @@ def get_tmdb_genres():
 
 def get_popular_by_genre(genre_id):
     url = f"https://api.themoviedb.org/3/discover/movie?api_key={TMDB_API_KEY}&with_genres={genre_id}&sort_by=popularity.desc&vote_count.gte=500"
-    return requests.get(url).json().get('results', [])[:12] # Return top 12
+    return requests.get(url).json().get('results', [])[:12]
 
 def search_tmdb(query):
     url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
     return requests.get(url).json().get('results', [])
 
-def get_recommendations(watched_ids, user_genres=None):
-    # Simplified logic for demo (fetching popular)
-    # In full version, use the seed/history logic we built before
-    url = f"https://api.themoviedb.org/3/movie/popular?api_key={TMDB_API_KEY}&language=en-US&page=1"
-    data = requests.get(url).json().get('results', [])
+def get_recommendations(watched_ids, media_type="movie", selected_genre_ids=None, page=1):
+    # Base URL changes based on media type
+    endpoint = "tv" if media_type == "TV Shows" else "movie"
+    
+    base_url = f"https://api.themoviedb.org/3/discover/{endpoint}?api_key={TMDB_API_KEY}&language=en-US&sort_by=popularity.desc&vote_count.gte=200&page={page}"
+    
+    # Add Genre Filter
+    if selected_genre_ids:
+        # Join IDs with pipe (OR logic) or comma (AND logic). Let's use Comma (AND).
+        g_str = ",".join([str(g) for g in selected_genre_ids])
+        base_url += f"&with_genres={g_str}"
+
+    data = requests.get(base_url).json().get('results', [])
     
     # Filter out watched
     if watched_ids:
         data = [m for m in data if str(m['id']) not in watched_ids]
     
-    return pd.DataFrame(data)
+    return data # Returns List of Dicts
 
 # --- APP STARTUP ---
 st.set_page_config(page_title="Cinematch", layout="wide", page_icon="🎬")
 
-# Session State Initialization
+# Init Session State
 if 'page' not in st.session_state: st.session_state.page = "home"
 if 'onboarding_step' not in st.session_state: st.session_state.onboarding_step = 0
 if 'new_user_data' not in st.session_state: st.session_state.new_user_data = {"name": "", "genres": [], "seeds": []}
 if 'temp_genre_selection' not in st.session_state: st.session_state.temp_genre_selection = None
 if 'view_movie_detail' not in st.session_state: st.session_state.view_movie_detail = None
+if 'trigger_onboarding' not in st.session_state: st.session_state.trigger_onboarding = False
+if 'rec_page' not in st.session_state: st.session_state.rec_page = 1
+if 'loaded_recs' not in st.session_state: st.session_state.loaded_recs = []
 
-# Load Users
+# CSS Hacks for smaller tiles & nicer font
+st.markdown("""
+<style>
+    div[data-testid="stImage"] img { border-radius: 10px; transition: transform 0.2s; }
+    div[data-testid="stImage"] img:hover { transform: scale(1.05); }
+    h1, h2, h3 { font-family: 'Helvetica Neue', sans-serif; }
+</style>
+""", unsafe_allow_html=True)
+
 existing_users = get_users()
 
-# --- ONBOARDING WIZARD ---
-# Checks if we need to onboard (No users OR user clicked 'Create New')
-if not existing_users or st.session_state.get('trigger_onboarding', False):
-    st.empty() # Clear sidebar if possible
-    
+# --- ONBOARDING WIZARD (Same as before) ---
+if not existing_users or st.session_state.trigger_onboarding:
+    st.empty()
     step = st.session_state.onboarding_step
     user_data = st.session_state.new_user_data
-    
     st.markdown("<h1 style='text-align: center;'>🍿 Welcome to Cinematch</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center;'>Let's build your taste profile.</p>", unsafe_allow_html=True)
     st.divider()
 
-    # STEP 0: NAME
     if step == 0:
-        col1, col2, col3 = st.columns([1,2,1])
-        with col2:
+        c1, c2, c3 = st.columns([1,2,1])
+        with c2:
             name = st.text_input("First, what should we call you?")
             if st.button("Start Setup"):
                 if name:
                     st.session_state.new_user_data["name"] = name
                     st.session_state.onboarding_step = 1
                     st.rerun()
-
-    # STEP 1, 3, 5: SELECT GENRE
     elif step in [1, 3, 5]:
-        cycle_num = (step // 2) + 1 # 1, 2, or 3
-        col1, col2, col3 = st.columns([1,2,1])
-        with col2:
-            st.subheader(f"Step {cycle_num}/3: Pick a Genre")
+        c1, c2, c3 = st.columns([1,2,1])
+        with c2:
+            st.subheader(f"Step {(step//2)+1}/3: Pick a Genre")
             genre_map = get_tmdb_genres()
-            # Filter out already selected genres
-            available_genres = [g for g in genre_map.keys() if g not in user_data["genres"]]
-            selected_genre_name = st.selectbox("I'm in the mood for...", available_genres)
-            
-            if st.button(f"Show me {selected_genre_name} movies"):
-                st.session_state.temp_genre_selection = (selected_genre_name, genre_map[selected_genre_name])
+            avail = [g for g in genre_map.keys() if g not in user_data["genres"]]
+            sel = st.selectbox("I'm in the mood for...", avail)
+            if st.button(f"Show {sel}"):
+                st.session_state.temp_genre_selection = (sel, genre_map[sel])
                 st.session_state.onboarding_step += 1
                 st.rerun()
-
-    # STEP 2, 4, 6: SELECT MOVIES
     elif step in [2, 4, 6]:
-        genre_name, genre_id = st.session_state.temp_genre_selection
-        st.subheader(f"Select 3 favorites from: {genre_name}")
-        
-        movies = get_popular_by_genre(genre_id)
-        
-        # Grid Layout for selection
-        selected_this_round = []
-        cols = st.columns(4)
-        
-        # We use a form to capture checkboxes
-        with st.form("movie_select_form"):
+        g_name, g_id = st.session_state.temp_genre_selection
+        st.subheader(f"Select favorites: {g_name}")
+        movies = get_popular_by_genre(g_id)
+        sel_rnd = []
+        cols = st.columns(6) # Smaller tiles in onboarding too
+        with st.form("movie_select"):
             for idx, m in enumerate(movies):
-                col = cols[idx % 4]
-                with col:
+                with cols[idx % 6]:
                     poster = f"https://image.tmdb.org/t/p/w200{m['poster_path']}"
                     st.image(poster, use_container_width=True)
-                    if st.checkbox(m['title'], key=f"ob_{m['id']}"):
-                        selected_this_round.append(m['title'])
-            
+                    if st.checkbox(m['title'], key=f"ob_{m['id']}"): sel_rnd.append(m['title'])
             st.write("---")
-            submit = st.form_submit_button("Next Step")
-            
-            if submit:
-                if len(selected_this_round) >= 1: # Require at least 1, ideally 3
-                    # Save Data
-                    st.session_state.new_user_data["genres"].append(genre_name)
-                    st.session_state.new_user_data["seeds"].extend(selected_this_round)
-                    
-                    # Advance
-                    if step == 6: # Done
+            if st.form_submit_button("Next"):
+                if len(sel_rnd) >= 1:
+                    st.session_state.new_user_data["genres"].append(g_name)
+                    st.session_state.new_user_data["seeds"].extend(sel_rnd)
+                    if step == 6:
                         add_user(user_data["name"], user_data["genres"], user_data["seeds"])
                         st.session_state.trigger_onboarding = False
                         st.session_state.onboarding_step = 0
-                        st.success("Profile Created!")
-                        time.sleep(1)
                         st.rerun()
                     else:
                         st.session_state.onboarding_step += 1
                         st.rerun()
-                else:
-                    st.error("Please select at least one movie.")
 
-# --- MAIN APPLICATION (Post-Onboarding) ---
+# --- MAIN APP ---
 else:
-    # SIDEBAR NAVIGATION
-    st.sidebar.markdown("## 🎬 Cinematch")
-    
-    # User Selector
-    current_users = existing_users + ["➕ Add Profile"]
-    active_user = st.sidebar.selectbox("Watching Now:", current_users)
-    
-    if active_user == "➕ Add Profile":
-        st.session_state.trigger_onboarding = True
-        st.rerun()
+    # --- SIDEBAR ---
+    with st.sidebar:
+        st.markdown(render_header(), unsafe_allow_html=True)
+        
+        # User Selector
+        current_users = existing_users + ["➕ Add Profile"]
+        active_user = st.selectbox("Watching Now:", current_users)
+        if active_user == "➕ Add Profile":
+            st.session_state.trigger_onboarding = True
+            st.rerun()
+        
+        st.markdown("---")
+        
+        # PRO NAVIGATION
+        nav_choice = option_menu(
+            "Menu",
+            ["Home", "Profile", "Settings"],
+            icons=['house-fill', 'person-circle', 'gear-fill'],
+            menu_icon="cast",
+            default_index=0,
+            styles={
+                "nav-link-selected": {"background-color": "#E50914"},
+            }
+        )
 
-    st.sidebar.markdown("---")
-    
-    # Navigation Menu
-    nav_choice = st.sidebar.radio("Menu", ["🏠 Home", "👤 Profile", "⚙️ Settings"])
-    
-    # --- PAGE: HOME (Search + Recommendations) ---
-    if nav_choice == "🏠 Home":
+    # --- PAGE: HOME ---
+    if nav_choice == "Home":
+        # SEARCH
+        search_query = st.text_input("🔍 Search...", placeholder="Movies, TV Shows...")
         
-        # 1. SEARCH BAR (Integrated)
-        search_query = st.text_input("🔍 Search movies or TV shows...", placeholder="Type 'The Matrix' or 'The Bear'...")
-        
-        # 2. DETAIL VIEW (If a movie is selected)
+        # DETAIL VIEW
         if st.session_state.view_movie_detail:
             m = st.session_state.view_movie_detail
-            if st.button("← Back to List"):
+            if st.button("← Back"):
                 st.session_state.view_movie_detail = None
                 st.rerun()
-                
-            # Render Detail Card
+            
             st.markdown(f"## {m['title']}")
             c1, c2 = st.columns([1,3])
             with c1:
                 st.image(f"https://image.tmdb.org/t/p/w400{m['poster_path']}", use_container_width=True)
             with c2:
-                st.markdown(f"**Released:** {m.get('release_date', 'N/A')}")
                 st.write(m.get('overview'))
-                
-                # Badges
                 score = int(m.get('vote_average', 0) * 10)
                 st.markdown(render_rating_ring(score, "TMDB Score"), unsafe_allow_html=True)
-                
                 st.divider()
                 st.subheader("Rate & Log")
-                # Slider for Active User
                 user_rating = st.slider(f"{active_user}'s Rating", 1, 100, 70)
-                
                 if st.button("✅ Log to Database"):
-                    log_media(
-                        m['title'], m['id'], m.get('genre_ids', []),
-                        {active_user: user_rating}, m['media_type'], m['poster_path']
-                    )
+                    log_media(m['title'], m['id'], m.get('genre_ids', []),
+                              {active_user: user_rating}, m['media_type'], m['poster_path'])
                     st.success("Logged!")
-                    st.session_state.view_movie_detail = None # Close view
+                    st.session_state.view_movie_detail = None
                     time.sleep(1)
                     st.rerun()
 
-        # 3. MAIN GRID (Search Results OR Recommendations)
+        # MAIN GRID
         else:
             if search_query:
-                st.subheader(f"Results for '{search_query}'")
+                st.subheader("Search Results")
                 results = search_tmdb(search_query)
+                display_list = results
             else:
-                # Stats Header
-                history = get_watched_history()
-                user_count = len(history[history['User'] == active_user]) if not history.empty else 0
-                st.markdown(f"#### 👋 Hi {active_user}, you've watched **{user_count}** movies.")
+                # --- FILTERS ---
+                c_f1, c_f2 = st.columns([3, 1])
+                with c_f1:
+                    # Genre Filter
+                    g_map = get_tmdb_genres()
+                    sel_genres = st.multiselect("Filter Genres", list(g_map.keys()))
+                    sel_genre_ids = [g_map[name] for name in sel_genres]
+                with c_f2:
+                    # Type Filter
+                    media_type = st.radio("Type", ["Movies", "TV Shows"], horizontal=True, label_visibility="collapsed")
                 
-                st.subheader("Recommended for You")
-                # Get Recs (excluding watched)
+                # RECS LOGIC (Pagination)
+                history = get_watched_history()
                 watched_ids = history['Movie_ID'].astype(str).tolist() if not history.empty else []
-                results_df = get_recommendations(watched_ids)
-                results = results_df.to_dict('records')
+                
+                # Fetch Logic
+                # If filters changed, reset pagination
+                current_filters = (media_type, tuple(sel_genre_ids))
+                if 'last_filters' not in st.session_state: st.session_state.last_filters = current_filters
+                
+                if st.session_state.last_filters != current_filters:
+                    st.session_state.loaded_recs = [] # Clear cache
+                    st.session_state.rec_page = 1
+                    st.session_state.last_filters = current_filters
+                
+                # If cache empty, fetch page 1
+                if not st.session_state.loaded_recs:
+                    new_data = get_recommendations(watched_ids, media_type, sel_genre_ids, page=1)
+                    st.session_state.loaded_recs.extend(new_data)
 
-            # Render Grid of Cards
-            # We use batches of 4 columns
-            for i in range(0, len(results), 4):
-                cols = st.columns(4)
-                batch = results[i:i+4]
+                display_list = st.session_state.loaded_recs
+
+            # RENDER GRID (6 Columns)
+            GRID_COLS = 6
+            for i in range(0, len(display_list), GRID_COLS):
+                cols = st.columns(GRID_COLS)
+                batch = display_list[i:i+GRID_COLS]
                 for idx, item in enumerate(batch):
                     with cols[idx]:
-                        # Normalize keys (Search returns 'name' for TV, 'title' for movies)
                         title = item.get('title', item.get('name'))
                         poster = item.get('poster_path')
                         m_id = item.get('id')
-                        media_type = item.get('media_type', 'movie')
-                        
+                        m_type = item.get('media_type', 'movie') # Search gives specific, discover implies generic
+                        if not search_query: m_type = "movie" if media_type == "Movies" else "tv"
+
                         if poster:
-                            st.image(f"https://image.tmdb.org/t/p/w300{poster}", use_container_width=True)
+                            st.image(f"https://image.tmdb.org/t/p/w200{poster}", use_container_width=True)
                         else:
                             st.markdown("⬛ No Image")
                         
-                        st.markdown(f"**{title}**")
+                        # Truncate long titles
+                        if len(title) > 20: display_title = title[:18] + "..."
+                        else: display_title = title
                         
-                        # "Click to Log" Logic
-                        # Streamlit buttons don't pass data well, so we use session state
-                        if st.button("Log / Details", key=f"btn_{m_id}"):
-                            # Standardize item structure for Detail View
+                        st.caption(f"**{display_title}**")
+                        
+                        if st.button("Details", key=f"btn_{m_id}"):
                             item['title'] = title
-                            item['media_type'] = media_type
+                            item['media_type'] = m_type
                             st.session_state.view_movie_detail = item
                             st.rerun()
+            
+            # LOAD MORE BUTTON (Only for Recs)
+            if not search_query:
+                st.write("")
+                _, c_load, _ = st.columns([2,1,2])
+                with c_load:
+                    if st.button("Load More Movies..."):
+                        st.session_state.rec_page += 1
+                        new_data = get_recommendations(watched_ids, media_type, sel_genre_ids, page=st.session_state.rec_page)
+                        st.session_state.loaded_recs.extend(new_data)
+                        st.rerun()
 
     # --- PAGE: PROFILE ---
-    elif nav_choice == "👤 Profile":
+    elif nav_choice == "Profile":
         st.header(f"Profile: {active_user}")
         history = get_watched_history()
         if not history.empty:
             user_history = history[history['User'] == active_user]
             st.dataframe(user_history)
-        else:
-            st.info("No data available.")
+        else: st.info("No data available.")
 
     # --- PAGE: SETTINGS ---
-    elif nav_choice == "⚙️ Settings":
+    elif nav_choice == "Settings":
         st.header("Settings")
-        st.write("Coming soon: API Key management and Display Toggles.")
+        st.write("Settings coming soon.")
