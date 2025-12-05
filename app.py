@@ -18,13 +18,14 @@ st.markdown("""
     /* Card Container */
     .movie-card {
         position: relative;
-        display: inline-block;
+        display: block;
         width: 100%;
         margin-bottom: 5px;
         border-radius: 8px;
         overflow: hidden;
         box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         transition: transform 0.2s;
+        aspect-ratio: 2/3;
     }
     .movie-card:hover {
         transform: scale(1.02);
@@ -34,59 +35,54 @@ st.markdown("""
     /* Poster Image */
     .movie-img {
         width: 100%;
+        height: 100%;
+        object-fit: cover;
         display: block;
-        border-radius: 8px;
     }
 
-    /* Rating Badges - Force High Visibility */
+    /* Rating Badges */
     .rating-badge {
         position: absolute;
         bottom: 5px;
-        width: 30px;
-        height: 30px;
+        width: 32px;
+        height: 32px;
         border-radius: 50%;
-        background-color: #081c22;
+        background-color: rgba(8, 28, 34, 0.95);
         border: 2px solid #21d07a;
         color: white;
         font-family: sans-serif;
         font-weight: bold;
-        font-size: 10px;
+        font-size: 11px;
         display: flex;
+        flex-direction: column;
         justify-content: center;
         align-items: center;
-        z-index: 10; /* Force on top */
+        z-index: 10;
         box-shadow: 0 2px 4px rgba(0,0,0,0.8);
+        line-height: 1;
     }
     
     /* Positions */
-    .badge-left {
-        left: 5px;
-        border-color: #21d07a;
-    }
-    .badge-right {
-        right: 5px;
-        border-color: #01b4e4;
-    }
+    .badge-left { left: 5px; border-color: #21d07a; }
+    .badge-right { right: 5px; border-color: #01b4e4; }
     
-    /* Labels inside badges */
-    .badge-content {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        line-height: 0.9;
-    }
-    .tiny-label {
+    .badge-label {
         font-size: 5px;
         text-transform: uppercase;
         opacity: 0.8;
+        margin-bottom: 1px;
     }
     
-    /* Buttons */
+    /* Compact Buttons */
     div[data-testid="column"] button {
-        padding: 0px 5px !important;
-        font-size: 12px !important;
-        min-height: 0px !important;
-        height: 28px !important;
+        padding: 0px 0px !important;
+        font-size: 11px !important;
+        min-height: 25px !important;
+        height: 25px !important;
+        width: 100% !important;
+    }
+    div[data-testid="column"] {
+        padding: 0 2px !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -125,24 +121,18 @@ def log_media(title, movie_id, genres, users_ratings, media_type, poster_path):
     service = get_google_sheet_client()
     timestamp = datetime.now().strftime("%Y-%m-%d")
     
-    # --- ROBUST GENRE FIX ---
+    # Genre Fix
     genre_str = "Unknown"
     try:
         if isinstance(genres, list) and len(genres) > 0:
-            # Check if dict (API data) or int (Internal ID)
             if isinstance(genres[0], dict):
                 genre_str = ", ".join([g.get('name', '') for g in genres])
             elif isinstance(genres[0], int):
-                # Fetch Map if needed
-                url = f"https://api.themoviedb.org/3/genre/movie/list?api_key={TMDB_API_KEY}&language=en-US"
-                data = requests.get(url).json()
-                id_map = {g['id']: g['name'] for g in data.get('genres', [])}
-                genre_str = ", ".join([id_map.get(g, str(g)) for g in genres])
+                # We skip the map fetch for speed here, just logging IDs if map fails
+                genre_str = str(genres) 
         else:
             genre_str = str(genres)
-    except Exception as e:
-        genre_str = "Error"
-    # -----------------------
+    except: genre_str = "Error"
 
     new_rows = []
     for user, rating in users_ratings.items():
@@ -180,46 +170,27 @@ def search_tmdb(query):
     url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
     return requests.get(url).json().get('results', [])
 
-# --- HTML GENERATOR ---
+# --- HTML GENERATOR (FLATTENED TO FIX BUG) ---
 def render_card(poster_path, tmdb_score, user_score=None):
     poster_url = f"https://image.tmdb.org/t/p/w400{poster_path}" if poster_path else "https://via.placeholder.com/200x300"
     
-    # 1. TMDB Badge Logic
+    # 1. TMDB Badge
     tmdb_html = ""
     if tmdb_score is not None:
         color = "#21d07a" # Green
         if tmdb_score < 70: color = "#d2d531" # Yellow
         if tmdb_score < 40: color = "#db2360" # Red
-        
-        tmdb_html = f"""
-        <div class="rating-badge badge-left" style="border-color: {color};">
-            <div class="badge-content">
-                <span class="tiny-label">TMDB</span>
-                {tmdb_score}
-            </div>
-        </div>
-        """
+        # Single line string
+        tmdb_html = f'<div class="rating-badge badge-left" style="border-color: {color};"><span class="badge-label">TMDB</span>{tmdb_score}</div>'
     
-    # 2. User Badge Logic
+    # 2. User Badge
     user_html = ""
     if user_score is not None and str(user_score) != 'nan':
-        user_html = f"""
-        <div class="rating-badge badge-right">
-            <div class="badge-content">
-                <span class="tiny-label">YOU</span>
-                {int(float(user_score))}
-            </div>
-        </div>
-        """
+        # Single line string
+        user_html = f'<div class="rating-badge badge-right"><span class="badge-label">YOU</span>{int(float(user_score))}</div>'
 
-    # 3. Final HTML
-    return f"""
-    <div class="movie-card">
-        <img src="{poster_url}" class="movie-img">
-        {tmdb_html}
-        {user_html}
-    </div>
-    """
+    # 3. Final HTML (Single line)
+    return f'<div class="movie-card"><img src="{poster_url}" class="movie-img">{tmdb_html}{user_html}</div>'
 
 # --- APP STARTUP ---
 st.set_page_config(page_title="Cinematch", layout="wide", page_icon="🎬")
@@ -359,7 +330,7 @@ if nav_choice == "Home":
                     short_title = (title[:16] + "..") if len(title) > 18 else title
                     st.markdown(f"**{short_title}**")
 
-                    # Text Buttons
+                    # Text Buttons (Clean, aligned)
                     b1, b2, b3 = st.columns(3)
                     with b1:
                         if st.button("Info", key=f"d_{item['id']}"):
