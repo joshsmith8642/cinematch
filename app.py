@@ -15,76 +15,78 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 # --- CSS STYLING ---
 st.markdown("""
 <style>
-    /* Movie Card Container */
+    /* Card Container */
     .movie-card {
         position: relative;
-        border-radius: 12px;
+        display: inline-block;
+        width: 100%;
+        margin-bottom: 5px;
+        border-radius: 8px;
         overflow: hidden;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
-        margin-bottom: 8px; /* Reduced bottom margin */
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         transition: transform 0.2s;
-        aspect-ratio: 2/3; /* Enforce poster aspect ratio */
     }
     .movie-card:hover {
-        transform: scale(1.03);
-        z-index: 10;
+        transform: scale(1.02);
+        z-index: 5;
     }
+    
+    /* Poster Image */
     .movie-img {
         width: 100%;
-        height: 100%;
-        object-fit: cover;
         display: block;
-        border-radius: 12px;
+        border-radius: 8px;
     }
-    
-    /* Rating Overlays */
+
+    /* Rating Badges - Force High Visibility */
     .rating-badge {
         position: absolute;
-        bottom: 8px;
-        width: 32px; /* Smaller badge */
-        height: 32px;
+        bottom: 5px;
+        width: 30px;
+        height: 30px;
         border-radius: 50%;
-        background: rgba(8, 28, 34, 0.9);
+        background-color: #081c22;
         border: 2px solid #21d07a;
-        display: flex;
-        align-items: center;
-        justify-content: center;
         color: white;
+        font-family: sans-serif;
         font-weight: bold;
         font-size: 10px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.5);
-        z-index: 2;
-        flex-direction: column;
-        line-height: 1;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 10; /* Force on top */
+        box-shadow: 0 2px 4px rgba(0,0,0,0.8);
     }
     
-    /* Position specific badges */
+    /* Positions */
     .badge-left {
-        left: 8px;
+        left: 5px;
+        border-color: #21d07a;
     }
     .badge-right {
-        right: 8px;
-        border-color: #01b4e4; /* Blue for User */
+        right: 5px;
+        border-color: #01b4e4;
     }
     
-    .badge-label {
+    /* Labels inside badges */
+    .badge-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        line-height: 0.9;
+    }
+    .tiny-label {
         font-size: 5px;
         text-transform: uppercase;
-        margin-bottom: 1px;
         opacity: 0.8;
     }
     
-    /* COMPACT BUTTONS CSS */
+    /* Buttons */
     div[data-testid="column"] button {
-        width: 100%;
-        padding: 0.1rem 0.1rem !important; /* Force tight padding */
-        font-size: 0.75rem !important; /* Smaller text */
-        height: auto !important;
+        padding: 0px 5px !important;
+        font-size: 12px !important;
         min-height: 0px !important;
-    }
-    /* Reduce gap between grid columns */
-    div[data-testid="column"] {
-        padding: 0 0.2rem; 
+        height: 28px !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -123,23 +125,24 @@ def log_media(title, movie_id, genres, users_ratings, media_type, poster_path):
     service = get_google_sheet_client()
     timestamp = datetime.now().strftime("%Y-%m-%d")
     
-    # Genre ID to Name fix
+    # --- ROBUST GENRE FIX ---
+    genre_str = "Unknown"
     try:
-        url = f"https://api.themoviedb.org/3/genre/movie/list?api_key={TMDB_API_KEY}&language=en-US"
-        data = requests.get(url).json()
-        id_map = {g['id']: g['name'] for g in data.get('genres', [])}
-    except: id_map = {}
-
-    genre_str = ""
-    if isinstance(genres, list) and len(genres) > 0:
-        if isinstance(genres[0], dict):
-            names = [g.get('name', '') for g in genres]
-            genre_str = ", ".join(names)
-        elif isinstance(genres[0], int):
-            names = [id_map.get(g_id, str(g_id)) for g_id in genres]
-            genre_str = ", ".join(names)
-    else:
-        genre_str = str(genres)
+        if isinstance(genres, list) and len(genres) > 0:
+            # Check if dict (API data) or int (Internal ID)
+            if isinstance(genres[0], dict):
+                genre_str = ", ".join([g.get('name', '') for g in genres])
+            elif isinstance(genres[0], int):
+                # Fetch Map if needed
+                url = f"https://api.themoviedb.org/3/genre/movie/list?api_key={TMDB_API_KEY}&language=en-US"
+                data = requests.get(url).json()
+                id_map = {g['id']: g['name'] for g in data.get('genres', [])}
+                genre_str = ", ".join([id_map.get(g, str(g)) for g in genres])
+        else:
+            genre_str = str(genres)
+    except Exception as e:
+        genre_str = "Error"
+    # -----------------------
 
     new_rows = []
     for user, rating in users_ratings.items():
@@ -162,14 +165,6 @@ def get_tmdb_genres():
     data = requests.get(url).json()
     return {g['name']: g['id'] for g in data.get('genres', [])}
 
-def get_popular_by_genre(genre_id):
-    url = f"https://api.themoviedb.org/3/discover/movie?api_key={TMDB_API_KEY}&with_genres={genre_id}&sort_by=popularity.desc&vote_count.gte=500"
-    return requests.get(url).json().get('results', [])[:12]
-
-def search_tmdb(query):
-    url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
-    return requests.get(url).json().get('results', [])
-
 def get_recommendations(watched_ids, media_type="movie", selected_genre_ids=None, page=1):
     endpoint = "tv" if media_type == "TV Shows" else "movie"
     base_url = f"https://api.themoviedb.org/3/discover/{endpoint}?api_key={TMDB_API_KEY}&language=en-US&sort_by=popularity.desc&vote_count.gte=200&page={page}"
@@ -181,48 +176,50 @@ def get_recommendations(watched_ids, media_type="movie", selected_genre_ids=None
         data = [m for m in data if str(m['id']) not in watched_ids]
     return data
 
-# --- HTML CARD RENDERER (REWRITTEN) ---
-def render_movie_card_html(poster_path, tmdb_score, user_score=None):
-    """Generates the HTML for the image with overlaid ratings"""
-    
-    # 1. Colors
-    tmdb_color = "#21d07a" # Green
-    if tmdb_score < 70: tmdb_color = "#d2d531" # Yellow
-    if tmdb_score < 40: tmdb_color = "#db2360" # Red
-    
+def search_tmdb(query):
+    url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
+    return requests.get(url).json().get('results', [])
+
+# --- HTML GENERATOR ---
+def render_card(poster_path, tmdb_score, user_score=None):
     poster_url = f"https://image.tmdb.org/t/p/w400{poster_path}" if poster_path else "https://via.placeholder.com/200x300"
     
-    # 2. Build User Badge HTML (Right Side)
-    user_badge_html = ""
-    if user_score is not None and str(user_score).lower() != 'nan':
-        user_badge_html = f"""
-        <div class="rating-badge badge-right">
-            <span class="badge-label">You</span>
-            {int(float(user_score))}
+    # 1. TMDB Badge Logic
+    tmdb_html = ""
+    if tmdb_score is not None:
+        color = "#21d07a" # Green
+        if tmdb_score < 70: color = "#d2d531" # Yellow
+        if tmdb_score < 40: color = "#db2360" # Red
+        
+        tmdb_html = f"""
+        <div class="rating-badge badge-left" style="border-color: {color};">
+            <div class="badge-content">
+                <span class="tiny-label">TMDB</span>
+                {tmdb_score}
+            </div>
         </div>
         """
     
-    # 3. Build TMDB Badge HTML (Left Side)
-    # Only show TMDB badge if score > 0
-    tmdb_badge_html = ""
-    if tmdb_score > 0:
-        tmdb_badge_html = f"""
-        <div class="rating-badge badge-left" style="border-color: {tmdb_color};">
-            <span class="badge-label">TMDB</span>
-            {tmdb_score}
+    # 2. User Badge Logic
+    user_html = ""
+    if user_score is not None and str(user_score) != 'nan':
+        user_html = f"""
+        <div class="rating-badge badge-right">
+            <div class="badge-content">
+                <span class="tiny-label">YOU</span>
+                {int(float(user_score))}
+            </div>
         </div>
         """
 
-    # 4. Final Clean HTML
-    # Note: We use simple string concatenation to avoid f-string nesting errors
-    html = f"""
+    # 3. Final HTML
+    return f"""
     <div class="movie-card">
         <img src="{poster_url}" class="movie-img">
-        {tmdb_badge_html}
-        {user_badge_html}
+        {tmdb_html}
+        {user_html}
     </div>
     """
-    return html
 
 # --- APP STARTUP ---
 st.set_page_config(page_title="Cinematch", layout="wide", page_icon="🎬")
@@ -253,13 +250,12 @@ with st.sidebar:
     st.markdown("---")
     nav_choice = option_menu("Menu", ["Home", "Profile", "Settings"], icons=['house-fill', 'person-circle', 'gear-fill'], menu_icon="cast", default_index=0, styles={"nav-link-selected": {"background-color": "#E50914"}})
 
-# --- MAIN PAGE: HOME ---
+# --- HOME PAGE ---
 if nav_choice == "Home":
     
-    # 1. SEARCH BAR
     search_query = st.text_input("🔍 Search...", placeholder="Movies, TV Shows...")
 
-    # 2. DETAIL MODAL
+    # --- DETAIL VIEW ---
     if st.session_state.view_movie_detail:
         m = st.session_state.view_movie_detail
         if st.button("← Back to Grid"):
@@ -270,7 +266,7 @@ if nav_choice == "Home":
         with c1:
             st.image(f"https://image.tmdb.org/t/p/w400{m['poster_path']}", use_container_width=True)
         with c2:
-            st.markdown(f"## {m['title']} ({m.get('release_date', '')[:4]})")
+            st.markdown(f"## {m['title']}")
             st.write(m.get('overview'))
             st.divider()
             st.subheader("Rate & Log")
@@ -282,132 +278,103 @@ if nav_choice == "Home":
                 time.sleep(1)
                 st.rerun()
 
-    # 3. MAIN GRID
+    # --- GRID VIEW ---
     else:
         if search_query:
             st.subheader("Search Results")
             display_list = search_tmdb(search_query)
         else:
-            # --- TOP CONTROLS ROW ---
+            # Filters
             c_mode, c_type, c_sort, c_genre = st.columns([1.5, 1.5, 1.5, 3])
+            with c_mode: view_mode = st.selectbox("View", ["Recommendations", "Rewatch"], label_visibility="collapsed")
+            with c_type: media_type = st.selectbox("Type", ["Movies", "TV Shows"], label_visibility="collapsed")
             
-            with c_mode:
-                view_mode = st.selectbox("View", ["Recommendations", "Rewatch"], label_visibility="collapsed")
-            with c_type:
-                media_type = st.selectbox("Type", ["Movies", "TV Shows"], label_visibility="collapsed")
+            sort_options = ["Popularity", "Rating", "Newest"] if view_mode == "Recommendations" else ["Date Watched", "Rating"]
+            with c_sort: sort_by = st.selectbox("Sort", sort_options, label_visibility="collapsed")
             
-            # --- SORTING LOGIC ---
-            sort_options = []
-            if view_mode == "Recommendations":
-                sort_options = ["Popularity", "Highest Rated", "Newest"]
-            else:
-                sort_options = ["Date Watched", "Highest Rated"]
-                
-            with c_sort:
-                sort_by = st.selectbox("Sort", sort_options, label_visibility="collapsed")
-
             with c_genre:
                 g_map = get_tmdb_genres()
                 sel_genres = st.multiselect("Genre", list(g_map.keys()), placeholder="All Genres", label_visibility="collapsed")
-                sel_genre_ids = [g_map[name] for name in sel_genres]
+                sel_ids = [g_map[name] for name in sel_genres]
 
             history = get_watched_history()
             
-            # --- DATA FETCHING: REWATCH ---
+            # 1. REWATCH DATA
             if view_mode == "Rewatch":
                 if not history.empty:
-                    my_history = history[history['User'] == active_user].copy()
+                    my_hist = history[history['User'] == active_user].copy()
                     display_list = []
-                    
-                    for _, row in my_history.iterrows():
-                        if sel_genres and not any(g in row['Genres'] for g in sel_genres):
-                            continue
-                        
+                    for _, row in my_hist.iterrows():
+                        if sel_genres and not any(g in row['Genres'] for g in sel_genres): continue
                         display_list.append({
-                            "id": row['Movie_ID'],
-                            "title": row['Title'],
-                            "poster_path": row['Poster'],
-                            "vote_average": 0, # TMDB score not stored in history, default to 0
-                            "user_rating": float(row['Rating']),
-                            "release_date": row['Date'], 
-                            "media_type": row['Type']
+                            "id": row['Movie_ID'], "title": row['Title'], "poster_path": row['Poster'],
+                            "vote_average": 0, "user_rating": float(row['Rating']), "media_type": row['Type'], "date": row['Date']
                         })
                     
-                    # Apply Sorting (Rewatch)
-                    if sort_by == "Highest Rated":
-                        display_list.sort(key=lambda x: x['user_rating'], reverse=True)
-                    else: # Date Watched
-                        display_list.sort(key=lambda x: x['release_date'], reverse=True)
-                        
+                    if sort_by == "Rating": display_list.sort(key=lambda x: x['user_rating'], reverse=True)
+                    else: display_list.sort(key=lambda x: x['date'], reverse=True)
                 else:
                     st.info("No history yet.")
                     display_list = []
 
-            # --- DATA FETCHING: RECOMMENDATIONS ---
+            # 2. RECS DATA
             else:
                 watched_ids = history['Movie_ID'].astype(str).tolist() if not history.empty else []
-                
-                # Check Filters for Pagination Reset
-                curr_filters = (media_type, tuple(sel_genre_ids), sort_by)
+                # Cache Logic
+                curr_filters = (media_type, tuple(sel_ids), sort_by)
                 if 'last_filters' not in st.session_state: st.session_state.last_filters = None
-                
                 if st.session_state.last_filters != curr_filters:
                     st.session_state.loaded_recs = []
                     st.session_state.rec_page = 1
                     st.session_state.last_filters = curr_filters
                 
                 if not st.session_state.loaded_recs:
-                    new_data = get_recommendations(watched_ids, media_type, sel_genre_ids, page=1)
+                    new_data = get_recommendations(watched_ids, media_type, sel_ids, page=1)
                     st.session_state.loaded_recs.extend(new_data)
                 
-                # Apply Sorting (Recs) - Note: API gives Popularity by default
-                # We sort the current batch in memory for specific sorts
-                raw_list = [m for m in st.session_state.loaded_recs if m['id'] not in st.session_state.hidden_movies]
+                raw = [m for m in st.session_state.loaded_recs if m['id'] not in st.session_state.hidden_movies]
                 
-                if sort_by == "Highest Rated":
-                    display_list = sorted(raw_list, key=lambda x: x.get('vote_average', 0), reverse=True)
-                elif sort_by == "Newest":
-                    display_list = sorted(raw_list, key=lambda x: x.get('release_date', '0000'), reverse=True)
-                else: # Popularity (Default order from API)
-                    display_list = raw_list
+                if sort_by == "Rating": display_list = sorted(raw, key=lambda x: x.get('vote_average', 0), reverse=True)
+                elif sort_by == "Newest": display_list = sorted(raw, key=lambda x: x.get('release_date', '0000'), reverse=True)
+                else: display_list = raw
 
-        # --- GRID RENDERER ---
-        GRID_COLS = 6
-        for i in range(0, len(display_list), GRID_COLS):
-            cols = st.columns(GRID_COLS)
-            batch = display_list[i:i+GRID_COLS]
+        # RENDERER
+        COLS = 6
+        for i in range(0, len(display_list), COLS):
+            cols = st.columns(COLS)
+            batch = display_list[i:i+COLS]
             for idx, item in enumerate(batch):
                 with cols[idx]:
+                    # Values
                     title = item.get('title', item.get('name'))
-                    date = item.get('release_date', item.get('first_air_date', 'N/A'))[:4]
-                    tmdb_score = int(item.get('vote_average', 0) * 10)
-                    user_score = item.get('user_rating', None)
+                    tmdb = int(item.get('vote_average', 0) * 10)
+                    user = item.get('user_rating', None)
                     m_type = item.get('media_type', 'movie')
+                    poster = item.get('poster_path')
                     
-                    # 1. HTML CARD
-                    st.markdown(render_movie_card_html(item.get('poster_path'), tmdb_score, user_score), unsafe_allow_html=True)
+                    # HTML Card
+                    st.markdown(render_card(poster, tmdb, user), unsafe_allow_html=True)
                     
-                    # 2. TITLE
-                    if len(title) > 18: d_title = title[:16] + ".."
-                    else: d_title = title
-                    st.markdown(f"**{d_title}** <span style='color:gray; font-size:0.7em'>({date})</span>", unsafe_allow_html=True)
-                    
-                    # 3. COMPACT BUTTONS
-                    b1, b2, b3 = st.columns(3, gap="small")
+                    # Text Title
+                    short_title = (title[:16] + "..") if len(title) > 18 else title
+                    st.markdown(f"**{short_title}**")
+
+                    # Text Buttons
+                    b1, b2, b3 = st.columns(3)
                     with b1:
-                        if st.button("ℹ️", key=f"d_{item['id']}", help="Details"):
+                        if st.button("Info", key=f"d_{item['id']}"):
                             item['title'] = title
                             item['media_type'] = m_type
                             st.session_state.view_movie_detail = item
                             st.rerun()
                     with b2:
-                        if st.button("✅", key=f"w_{item['id']}", help="Log"):
+                        if st.button("Log", key=f"l_{item['id']}"):
                             item['title'] = title
                             item['media_type'] = m_type
                             st.session_state.view_movie_detail = item
                             st.rerun()
                     with b3:
-                        if st.button("🚫", key=f"h_{item['id']}", help="Hide"):
+                        if st.button("Hide", key=f"h_{item['id']}"):
                             st.session_state.hidden_movies.append(item['id'])
                             st.rerun()
 
@@ -415,7 +382,7 @@ if nav_choice == "Home":
             st.write("")
             if st.button("Load More..."):
                 st.session_state.rec_page += 1
-                new_data = get_recommendations([], media_type, sel_genre_ids, page=st.session_state.rec_page)
+                new_data = get_recommendations([], media_type, sel_ids, page=st.session_state.rec_page)
                 st.session_state.loaded_recs.extend(new_data)
                 st.rerun()
 
