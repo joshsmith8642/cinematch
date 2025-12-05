@@ -7,6 +7,7 @@ from datetime import datetime
 import time
 from streamlit_option_menu import option_menu
 from collections import Counter
+import re
 
 # --- CONFIGURATION ---
 TMDB_API_KEY = st.secrets["tmdb_api_key"]
@@ -70,21 +71,29 @@ st.markdown("""
     .badge-right { right: 5px; border-color: #01b4e4; }
     .badge-label { font-size: 5px; text-transform: uppercase; opacity: 0.8; margin-bottom: 1px; }
     
-    /* Streaming Logos */
+    /* Streaming Logos (On Card) */
     .stream-container {
         position: absolute;
         top: 5px;
         right: 5px;
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 2px;
         z-index: 12;
     }
     .stream-logo {
-        width: 24px;
-        height: 24px;
+        width: 22px;
+        height: 22px;
         border-radius: 4px;
         box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+    }
+    
+    /* Streaming Logos (In Details) */
+    .detail-stream-logo {
+        width: 40px;
+        height: 40px;
+        border-radius: 6px;
+        margin-right: 8px;
     }
     
     /* Compact Buttons */
@@ -97,45 +106,50 @@ st.markdown("""
     }
     div[data-testid="column"] { padding: 0 2px !important; }
     
-    /* STATS CARDS CSS (COMPACT) */
+    /* STATS CARDS CSS (FIXED) */
     .stat-card {
         background: linear-gradient(135deg, #1e1e1e 0%, #2a2a2a 100%);
         border-radius: 10px;
-        padding: 10px; /* Reduced padding */
+        padding: 12px 5px;
         text-align: center;
         border: 1px solid #333;
         box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-        height: 100%;
+        height: 100px; /* Fixed Height */
         display: flex;
         flex-direction: column;
         justify-content: center;
+        align-items: center;
     }
-    .stat-val { font-size: 22px; font-weight: 800; color: #fff; margin: 0; line-height: 1.2; }
+    .stat-val { font-size: 24px; font-weight: 800; color: #fff; margin: 0; line-height: 1.1; }
     .stat-label { font-size: 10px; text-transform: uppercase; color: #aaa; letter-spacing: 0.5px; margin-top: 4px; }
     .stat-accent-1 { color: #E50914; }
     .stat-accent-2 { color: #21d07a; }
     .stat-accent-3 { color: #01b4e4; }
 
-    /* COMPLEX SCORE CARD */
+    /* COMPLEX SCORE CARD (HORIZONTAL) */
     .score-card-grid {
         display: flex;
-        justify-content: space-around;
+        flex-direction: row; /* Force Horizontal */
+        justify-content: space-evenly;
         align-items: center;
-        padding: 5px 0;
+        width: 100%;
     }
     .score-item {
-        flex: 1;
         display: flex;
         flex-direction: column;
         align-items: center;
-        padding: 0 4px;
+        justify-content: center;
+        width: 33%;
     }
-    .border-x { border-left: 1px solid #444; border-right: 1px solid #444; }
+    .border-x { 
+        border-left: 1px solid #444; 
+        border-right: 1px solid #444; 
+    }
     .score-val { font-size: 18px; font-weight: 800; line-height: 1; }
-    .score-label { font-size: 8px; text-transform: uppercase; color: #aaa; margin-top: 2px; }
+    .score-label { font-size: 8px; text-transform: uppercase; color: #aaa; margin-top: 4px; }
     .score-title {
-        font-size: 8px; color: #888; margin-top: 3px;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 70px;
+        font-size: 9px; color: #888; margin-top: 2px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -240,21 +254,26 @@ def get_movie_details_live(movie_id, media_type="movie"):
         return requests.get(url).json()
     except: return {}
 
-@st.cache_data(ttl=3600) # Cache for 1 hour to improve performance
+@st.cache_data(ttl=3600)
 def get_watch_providers(media_id, media_type="movie"):
-    """Fetches streaming provider logos for US flatrate"""
+    """Fetches unique streaming provider logos for US flatrate"""
     try:
         endpoint = "tv" if media_type == "TV Shows" else "movie"
         url = f"https://api.themoviedb.org/3/{endpoint}/{media_id}/watch/providers?api_key={TMDB_API_KEY}"
         data = requests.get(url).json()
         
         providers = []
+        seen_names = set()
+        
         if 'results' in data and 'US' in data['results']:
             us_data = data['results']['US']
             if 'flatrate' in us_data:
                 for p in us_data['flatrate']:
-                    if p.get('logo_path'):
+                    p_name = p.get('provider_name')
+                    # Dedup logic:
+                    if p_name not in seen_names and p.get('logo_path'):
                         providers.append(f"https://image.tmdb.org/t/p/w45{p['logo_path']}")
+                        seen_names.add(p_name)
         return providers
     except:
         return []
@@ -296,7 +315,8 @@ def render_card(poster_path, tmdb_score, user_score=None, provider_logos=None):
     stream_html = ""
     if provider_logos:
         logos_str = ""
-        for logo_url in provider_logos:
+        # Limit to 3 logos on card to prevent overflow
+        for logo_url in provider_logos[:3]:
             logos_str += f'<img src="{logo_url}" class="stream-logo">'
         stream_html = f'<div class="stream-container">{logos_str}</div>'
 
@@ -307,20 +327,22 @@ def render_simple_stat_card(label, value, accent_class):
 
 def render_complex_stat_card(best_val, best_title, avg_val, worst_val, worst_title):
     return f"""
-    <div class="stat-card score-card-grid">
-        <div class="score-item">
-            <div class="score-val stat-accent-2">{best_val}</div>
-            <div class="score-label">BEST</div>
-            <div class="score-title">{best_title}</div>
-        </div>
-        <div class="score-item border-x">
-            <div class="score-val stat-accent-3">{avg_val}</div>
-            <div class="score-label">AVG</div>
-        </div>
-        <div class="score-item">
-            <div class="score-val stat-accent-1">{worst_val}</div>
-            <div class="score-label">WORST</div>
-            <div class="score-title">{worst_title}</div>
+    <div class="stat-card">
+        <div class="score-card-grid">
+            <div class="score-item">
+                <div class="score-val stat-accent-2">{best_val}</div>
+                <div class="score-label">BEST</div>
+                <div class="score-title">{best_title}</div>
+            </div>
+            <div class="score-item border-x">
+                <div class="score-val stat-accent-3">{avg_val}</div>
+                <div class="score-label">AVG</div>
+            </div>
+            <div class="score-item">
+                <div class="score-val stat-accent-1">{worst_val}</div>
+                <div class="score-label">WORST</div>
+                <div class="score-title">{worst_title}</div>
+            </div>
         </div>
     </div>
     """
@@ -328,7 +350,6 @@ def render_complex_stat_card(best_val, best_title, avg_val, worst_val, worst_tit
 # --- APP STARTUP ---
 st.set_page_config(page_title="Cinematch", layout="wide", page_icon="🎬")
 
-# Init Session
 if 'page' not in st.session_state: st.session_state.page = "home"
 if 'hidden_movies' not in st.session_state: st.session_state.hidden_movies = set()
 if 'view_movie_detail' not in st.session_state: st.session_state.view_movie_detail = None
@@ -370,19 +391,25 @@ if nav_choice == "Home":
         st.session_state.hidden_movies.update(db_hidden)
         st.session_state.hidden_synced = True
 
-    # 2. STATS DASHBOARD (Compact & Fixed)
+    # 2. STATS DASHBOARD (FIXED)
     if not user_history.empty:
-        # Calculations
         total = len(user_history)
         
+        # Genre Cleaning Logic
         genre_map_rev = get_genre_map_reversed()
         all_genres_names = []
         for g_str in user_history['Genres']:
             if g_str and g_str.lower() not in ['unknown', 'error']:
-                ids = [x.strip() for x in str(g_str).split(',')]
-                for g_id in ids:
-                    all_genres_names.append(genre_map_rev.get(g_id, g_id))
+                # Clean braces if accidentally saved
+                clean_str = str(g_str).replace('[', '').replace(']', '').replace("'", "")
+                parts = [x.strip() for x in clean_str.split(',')]
+                for part in parts:
+                    # Try to map ID to Name, otherwise keep as is
+                    all_genres_names.append(genre_map_rev.get(part, part))
+                    
         top_genre = Counter(all_genres_names).most_common(1)[0][0] if all_genres_names else "N/A"
+        # If it's still a digit (rare edge case), force map it
+        if top_genre.isdigit(): top_genre = genre_map_rev.get(top_genre, top_genre)
         
         # Scores
         try:
@@ -434,6 +461,21 @@ if nav_choice == "Home":
             title_text = f"{m['title']}"
             if 'release_date' in m: title_text += f" ({m['release_date'][:4]})"
             st.markdown(f"## {title_text}")
+            
+            # --- NEW: STREAMING INFO SECTION ---
+            # Fetch if not present
+            if 'provider_logos' not in m or not m['provider_logos']:
+                m['provider_logos'] = get_watch_providers(m['id'], m['media_type'])
+            
+            if m['provider_logos']:
+                st.write("**Streaming on:**")
+                logo_html = ""
+                for logo in m['provider_logos']:
+                    logo_html += f'<img src="{logo}" class="detail-stream-logo">'
+                st.markdown(logo_html, unsafe_allow_html=True)
+                st.write("")
+            # -----------------------------------
+            
             st.write(m.get('overview'))
             st.divider()
             st.subheader("Rate & Log")
@@ -452,7 +494,6 @@ if nav_choice == "Home":
         if search_query:
             st.subheader("Search Results")
             display_list = search_tmdb(search_query)
-            # Note: No streaming logos on search results to keep it fast
             processed_list = []
             for item in display_list:
                  item['provider_logos'] = None 
@@ -483,7 +524,6 @@ if nav_choice == "Home":
                         if sel_genres and not any(g in row['Genres'] for g in sel_genres): continue
                         
                         live_data = get_movie_details_live(row['Movie_ID'], row['Type'])
-                        # Get Providers for Rewatch too
                         prov_logos = get_watch_providers(row['Movie_ID'], row['Type'])
 
                         display_list.append({
@@ -506,7 +546,6 @@ if nav_choice == "Home":
                 watched_ids = history['Movie_ID'].astype(str).tolist() if not history.empty else []
                 prov_ids = [PROVIDERS[p] for p in selected_providers] if use_stream_filter else None
 
-                # Reset Logic
                 curr_filters = (media_type, tuple(sel_ids), sort_by, tuple(prov_ids) if prov_ids else None)
                 if 'last_filters' not in st.session_state: st.session_state.last_filters = None
                 if st.session_state.last_filters != curr_filters:
@@ -519,12 +558,10 @@ if nav_choice == "Home":
                     new_data = get_recommendations(watched_ids, media_type, sel_ids, prov_ids, page=1)
                     for m in new_data:
                         if str(m['id']) not in st.session_state.existing_ids:
-                            # FETCH PROVIDERS LIVE and cache
                             m['provider_logos'] = get_watch_providers(m['id'], media_type)
                             st.session_state.loaded_recs.append(m)
                             st.session_state.existing_ids.add(str(m['id']))
                 
-                # Filter Hidden
                 display_list = [m for m in st.session_state.loaded_recs if str(m['id']) not in st.session_state.hidden_movies]
                 
                 if sort_by == "Rating": display_list = sorted(display_list, key=lambda x: x.get('vote_average', 0), reverse=True)
@@ -585,7 +622,6 @@ if nav_choice == "Home":
                 count = 0
                 for m in new_data:
                     if str(m['id']) not in st.session_state.existing_ids:
-                        # Fetch providers for new batch
                         m['provider_logos'] = get_watch_providers(m['id'], media_type)
                         st.session_state.loaded_recs.append(m)
                         st.session_state.existing_ids.add(str(m['id']))
